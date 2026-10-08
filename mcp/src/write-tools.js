@@ -293,7 +293,9 @@ export const updateWorkout = {
     const previous = state.workouts[index]
     const end = Date.parse(`${date}T12:00:00Z`)
     const completedEntries = workoutEntries(entries)
-    state.workouts[index] = { ...previous, d: date, start: end - duration_minutes * 60000, end, routineId: routine_id || null, name: name.trim(), bw: bodyweight || null, entries: completedEntries }
+    state.workouts[index] = { ...previous, d: date, start: end - duration_minutes * 60000, end,
+      routineId: routine_id || null, routineIds: routine_id ? [routine_id] : [],
+      name: name.trim(), bw: bodyweight || null, entries: completedEntries }
   }), 'Workout updated')
 }
 
