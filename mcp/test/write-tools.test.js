@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
+import { entryRoutineId } from '../../frontend/src/lib/history.js'
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'opengym-write-'))
 const uid = 'owner'
@@ -82,6 +83,32 @@ describe('MCP write tools', () => {
     const saved = JSON.parse(fs.readFileSync(path.join(root, `state-${uid}.json`)))
     expect(saved.dayPlan['2026-08-21']).toBe(routine.routine_id)
     expect(saved.workouts.find(workout => workout.id === logged.workout_id).name).toBe('Conditioning corrected')
+  })
+
+  it.each(['new-plan', null])('corrects both routine fields of a phone workout to %s', async routineId => {
+    const file = path.join(root, `state-${uid}.json`)
+    const original = fs.readFileSync(file)
+    const stored = JSON.parse(original)
+    stored.routines.push({ id: 'new-plan', name: 'New plan', ex: [] })
+    stored.workouts.push({ id: 'phone-routines', d: '2026-10-01', routineId: 'old-plan',
+      routineIds: ['old-plan', 'second-plan'], note: 'keep this note',
+      entries: [{ id: '0025', sets: [{ w: 40, r: 8, done: true }] }] })
+    fs.writeFileSync(file, JSON.stringify(stored))
+    const auth = { scopes: ['opengym:read', 'opengym:write'], extra: { userId: uid } }
+    try {
+      await executeTool(tools.updateWorkout, {
+        expected_version: stored._rev, workout_id: 'phone-routines', routine_id: routineId,
+        date: '2026-10-01', name: 'Corrected', duration_minutes: 30,
+        entries: [{ exercise_id: '0025', sets: [{ weight: 40, reps: 8 }] }]
+      }, auth)
+      const saved = JSON.parse(fs.readFileSync(file)).workouts.find(w => w.id === 'phone-routines')
+      expect(saved.routineId).toBe(routineId)
+      expect(saved.routineIds).toEqual(routineId ? [routineId] : [])
+      expect(entryRoutineId(saved, saved.entries[0])).toBe(routineId)
+      expect(saved.note).toBe('keep this note')
+    } finally {
+      fs.writeFileSync(file, original)
+    }
   })
 
   describe('routines', () => {
