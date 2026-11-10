@@ -12,9 +12,12 @@
 #
 # Commands (the first word of SSH_ORIGINAL_COMMAND, or of the arguments):
 #   deploy <tag>   read a tar stream on stdin (docker-compose.yml, docker-compose.vps.yml,
-#                  images.tar.gz), load the images, back the data up, swap api -> mcp -> web and
+#                  images.tar.gz), load the images, back the data up, REHEARSE the new api on a copy
+#                  of that data (nothing real changes if it fails), then swap api -> mcp -> web and
 #                  wait for each to be healthy. Any failure puts the previous images back.
 #   rollback       put the previous images back (the ones recorded by the last deploy).
+#   rehearse [tag] run the rehearsal on a fresh copy of the data against the running (or given) images;
+#                  changes nothing in production.
 #   status         print what is running.
 #
 # Environment overrides exist for the tests (deploy/vps/test-deploy.sh) and never need setting in
@@ -87,9 +90,71 @@ rollback_previous() {
   [ "$DRY_RUN" = 1 ] || ln -sfn "$RELEASE_DIR" "$LINK"
 }
 
+# Rehearsal of the new version on a COPY of the real data, isolated from production (own network,
+# own volume, nothing published). The api image is started on the data it is about to serve and has
+# to come up healthy, report the same number of profiles as production and be able to read every
+# state file. It is the gate before anything real is swapped: a failure here changes nothing.
+rehearse() {
+  local tag=$1 bk=$2
+  local id=$$ net vol api prod_users new_health new_users
+  net=ogrehearse-$id; vol=ogrehearse-data-$id; api=ogrehearse-api-$id
+  rehearse_cleanup() {
+    docker rm -f "$api" > /dev/null 2>&1 || true
+    docker network rm "$net" > /dev/null 2>&1 || true
+    docker volume rm "$vol" > /dev/null 2>&1 || true
+  }
+  log "ensaio: subindo a versao nova numa copia dos dados"
+  docker network create "$net" > /dev/null || { rehearse_cleanup; return 1; }
+  docker volume create "$vol" > /dev/null || { rehearse_cleanup; return 1; }
+  docker run --rm -v "$vol":/d -v "$bk":/b:ro alpine sh -c 'tar xzf /b/data.tgz -C /d' \
+    || { rehearse_cleanup; log "ensaio: nao consegui restaurar a copia"; return 1; }
+  docker run -d --name "$api" --network "$net" -v "$vol":/x:ro -e PORT=3000 -e DATA_DIR=/data \
+    -e RP_ID=rehearsal.invalid -e ORIGIN=https://rehearsal.invalid -e TRUST_PROXY=1 -e INVITE_ONLY=1 \
+    "opengym-vps/api:$tag" sh -c 'cp -a /x/opengym/. /data/ && exec node server.js' > /dev/null \
+    || { rehearse_cleanup; log "ensaio: a imagem nova nao iniciou"; return 1; }
+  if ! wait_healthy "$api"; then
+    log "ensaio: a versao nova nao ficou saudavel sobre os dados reais. Ultimas linhas:"
+    docker logs --tail 15 "$api" 2>&1 | sed 's/^/    /' || true
+    rehearse_cleanup; return 1
+  fi
+  new_health=$(docker exec "$api" wget -qO- -T 5 http://127.0.0.1:3000/api/health 2> /dev/null || true)
+  prod_users=$(docker exec opengym-api wget -qO- -T 5 http://127.0.0.1:3000/api/health 2> /dev/null | sed -n 's/.*"users":\([0-9]*\).*/\1/p' || true)
+  new_users=$(printf '%s' "$new_health" | sed -n 's/.*"users":\([0-9]*\).*/\1/p')
+  if ! printf '%s' "$new_health" | grep -q '"ok":true' || [ -z "$new_users" ] || [ "$new_users" != "${prod_users:-x}" ]; then
+    log "ensaio: health inesperado. copia=$new_health producao_users=${prod_users:-?}"
+    rehearse_cleanup; return 1
+  fi
+  if ! docker exec "$api" node -e '
+    const fs = require("fs"); let n = 0;
+    JSON.parse(fs.readFileSync("/data/db.json", "utf8"));
+    for (const f of fs.readdirSync("/data").filter(f => /^state-[^.]*\.json$/.test(f))) { JSON.parse(fs.readFileSync("/data/" + f, "utf8")); n++; }
+    if (!n) { console.error("nenhum state-*.json"); process.exit(1); }
+    console.log("perfis lidos: " + n);'; then
+    log "ensaio: a copia tem arquivo de estado ilegivel"
+    rehearse_cleanup; return 1
+  fi
+  rehearse_cleanup
+  log "ensaio ok: a versao nova le todos os perfis ($new_users) e fica saudavel na copia dos dados"
+}
+
 cmd_status() {
   docker ps --format '{{.Names}} {{.Image}} {{.Status}}' | grep '^opengym-' || true
   readlink -f "$LINK" || true
+}
+
+cmd_rehearse() {
+  # Same rehearsal as in a deploy, against the images that are running now (or a given tag), with a
+  # fresh copy of the data. Changes nothing in production: use it to check the gate itself.
+  local tag=${1:-$(image_tag_of opengym-api)}
+  [ -n "$tag" ] || die "nao achei a tag da api em execucao"
+  mkdir -p "$BACKUPS"
+  local tmp
+  tmp=$(mktemp -d "$BACKUPS/rehearsal-copy.XXXXXX")
+  # shellcheck disable=SC2064
+  trap "rm -rf '$tmp'" EXIT
+  docker run --rm -v "$DATA":/d:ro -v "$tmp":/b alpine sh -c 'tar czf /b/data.tgz -C /d opengym opengym-mcp-remote'
+  [ -s "$tmp/data.tgz" ] || die "copia vazia"
+  rehearse "$tag" "$tmp" || die "ensaio falhou"
 }
 
 cmd_deploy() {
@@ -143,6 +208,7 @@ cmd_deploy() {
     docker run --rm -v "$DATA":/d:ro -v "$bk":/b alpine \
       sh -c 'tar czf /b/data.tgz -C /d opengym opengym-mcp-remote'
     [ -s "$bk/data.tgz" ] || die "backup vazio"
+    rehearse "$tag" "$bk" || die "ensaio na copia dos dados falhou; a producao nao foi tocada (imagens carregadas, nada trocado)"
   fi
 
   log "montando $release"
@@ -177,6 +243,7 @@ read -r cmd arg _ <<< "${SSH_ORIGINAL_COMMAND:-$*}"
 case "${cmd:-}" in
   deploy)   [ -n "${arg:-}" ] || die "uso: deploy <tag>"; cmd_deploy "$arg" ;;
   rollback) rollback_previous ;;
+  rehearse) cmd_rehearse "${arg:-}" ;;
   status)   cmd_status ;;
-  *)        die "comando desconhecido: ${cmd:-<vazio>} (use deploy <tag>, rollback ou status)" ;;
+  *)        die "comando desconhecido: ${cmd:-<vazio>} (use deploy <tag>, rollback, rehearse ou status)" ;;
 esac
