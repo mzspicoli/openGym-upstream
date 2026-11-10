@@ -78,7 +78,10 @@ Actions, "VPS deploy", Run workflow on `vps/main` (or push a `vps-v*` tag). Test
 run first; the deploy job then waits for approval. The tag is `v<version>-<short sha>`.
 
 What the server does, in order: checks free disk, loads the images, writes
-`/srv/apps/deploy-backups/opengym-pre-<tag>-<time>/data.tgz`, creates
+`/srv/apps/deploy-backups/opengym-pre-<tag>-<time>/data.tgz`, **rehearses the new api on a copy of that
+data** (own network and volume, nothing published: it has to come up healthy, report the same number of
+profiles as production and read every state file; if not, the deploy stops with production untouched),
+creates
 `/srv/apps/releases/opengym-<tag>` (compose files from the package, `.env` copied from the current
 release with the new tag), swaps `api`, `mcp` and `web` one by one, waits for each to be healthy, checks
 the public health URL, then moves `/srv/apps/opengym` to the new release. Any failure puts the
@@ -91,6 +94,7 @@ From anywhere that can SSH with the CI key, or on the server:
 ```
 /srv/apps/deploy/opengym-deploy.sh rollback     # previous images, recorded by the last deploy
 /srv/apps/deploy/opengym-deploy.sh status
+/srv/apps/deploy/opengym-deploy.sh rehearse [tag]   # the same rehearsal on a fresh copy, changes nothing
 ```
 
 A rollback does not touch data. To also restore the data, untar the backup of that deploy by hand,

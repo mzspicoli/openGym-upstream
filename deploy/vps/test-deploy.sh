@@ -29,6 +29,15 @@ case "$1" in
     fi ;;
   image) exit 0 ;;
   load) cat > /dev/null ;;
+  volume|network|rm|logs) exit 0 ;;
+  exec)
+    if [[ "$*" == *wget* ]]; then
+      if [ -n "${FAKE_REHEARSAL_FAIL:-}" ] && [[ "$*" == *ogrehearse-api* ]]; then echo '{"ok":true,"users":1,"writable":true}'
+      else echo '{"ok":true,"users":2,"writable":true}'; fi
+    elif [[ "$*" == *node* ]]; then
+      [ -z "${FAKE_PARSE_FAIL:-}" ] || exit 1
+      echo "perfis lidos: 2"
+    fi ;;
   run)
     for a in "$@"; do case "$a" in *:/b) d=${a%:/b}; mkdir -p "$d"; echo data > "$d/data.tgz" ;; esac; done ;;
   compose)
@@ -100,6 +109,30 @@ rm -rf "$T"
 new_env
 out=$(bundle | FAKE_CURL_FAIL=1 run_deploy "deploy v1.4.4-abc1234"); rc=$?
 { [ $rc -ne 0 ] && grep -q "health check final falhou" <<< "$out"; } && ok "health final falho aciona rollback" || bad "health final falho aciona rollback: $out"
+rm -rf "$T"
+
+# 7. the rehearsal on a copy of the data runs after the backup and before the first real swap
+new_env
+bundle | run_deploy "deploy v1.4.4-abc1234" > /dev/null
+r=$(grep -n "docker run -d --name ogrehearse-api" "$T/calls.log" | head -1 | cut -d: -f1)
+u=$(grep -n "^docker compose .* up " "$T/calls.log" | head -1 | cut -d: -f1)
+b=$(grep -n "docker run --rm .*alpine sh -c tar czf" "$T/calls.log" | head -1 | cut -d: -f1)
+{ [ -n "$r" ] && [ -n "$u" ] && [ -n "$b" ] && [ "$b" -lt "$r" ] && [ "$r" -lt "$u" ]; } && ok "ensaio roda depois do backup e antes da primeira troca" || bad "ordem backup < ensaio < troca (b=$b r=$r u=$u)"
+grep -q "docker rm -f ogrehearse-api" "$T/calls.log" && grep -q "docker network rm ogrehearse" "$T/calls.log" && grep -q "docker volume rm ogrehearse" "$T/calls.log" && ok "ensaio limpa container, rede e volume" || bad "ensaio limpa container, rede e volume"
+rm -rf "$T"
+
+# 8. a rehearsal that reads fewer profiles than production stops everything before any swap
+new_env
+out=$(bundle | FAKE_REHEARSAL_FAIL=1 run_deploy "deploy v1.4.4-abc1234"); rc=$?
+{ [ $rc -ne 0 ] && grep -q "ensaio na copia dos dados falhou" <<< "$out" && ! grep -q "^docker compose .* up " "$T/calls.log"; } && ok "ensaio reprovado nao troca nada" || bad "ensaio reprovado nao troca nada: $out"
+[ "$(readlink "$T/root/opengym")" = "$T/root/releases/opengym-v1.4.3-old" ] && [ ! -e "$T/root/releases/opengym-v1.4.4-abc1234" ] && ok "ensaio reprovado: link e releases intactos" || bad "ensaio reprovado: link e releases intactos"
+grep -q "docker rm -f ogrehearse-api" "$T/calls.log" && ok "ensaio reprovado tambem limpa o que criou" || bad "ensaio reprovado tambem limpa o que criou"
+rm -rf "$T"
+
+# 9. an unreadable state file in the copy stops the deploy too
+new_env
+out=$(bundle | FAKE_PARSE_FAIL=1 run_deploy "deploy v1.4.4-abc1234"); rc=$?
+{ [ $rc -ne 0 ] && grep -q "ilegivel" <<< "$out" && ! grep -q "^docker compose .* up " "$T/calls.log"; } && ok "estado ilegivel na copia aborta o deploy" || bad "estado ilegivel na copia aborta o deploy: $out"
 rm -rf "$T"
 
 [ $fail -eq 0 ] && echo "todos os testes passaram" || { echo "HA FALHAS"; exit 1; }
