@@ -35,6 +35,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
+          persist-credentials: false # o Claude tem Read: não deixar o GITHUB_TOKEN em .git/config
 
       - name: Review automático da PR
         uses: anthropics/claude-code-action@4fa93a88de49bbef68b10eb15aabedf28ca0e1ed # v1.0.271
@@ -52,7 +53,8 @@ jobs:
             treino), ao deploy da VPS (`deploy/vps/`, tags `vps-v*`) e à compatibilidade com o upstream.
             Não comente estilo nem preferência pessoal. Use comentários inline só para problemas concretos
             (cite arquivo e linha) e termine com um resumo curto: o que está bom, o que bloqueia o merge e o
-            que é opcional. Se não houver problema, diga isso em uma linha. Não edite arquivos.
+            que é opcional. Se não houver problema, diga isso em uma linha. Ao criar comentários inline, use
+            `confirmed: true`, senão eles podem ser descartados. Não edite arquivos.
           claude_args: |
-            --max-turns 12
+            --max-turns 20
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Read,Grep,Glob"
