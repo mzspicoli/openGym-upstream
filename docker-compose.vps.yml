@@ -1,0 +1,40 @@
+# VPS-only overlay (not part of the upstream PR): immutable image tags, fixed container names,
+# resource limits and the host data paths used on this server.
+services:
+  api:
+    image: opengym-vps/api:${OPENGYM_IMAGE_TAG:?Set an immutable deployment tag}
+    container_name: opengym-api
+    init: true
+    mem_limit: 256m
+    cpus: 0.50
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - /srv/data/opengym:/data
+    logging:
+      options: { max-size: "10m", max-file: "3" }
+
+  mcp:
+    image: opengym-vps/mcp:${OPENGYM_IMAGE_TAG:?Set an immutable deployment tag}
+    container_name: opengym-mcp
+    init: true
+    mem_limit: 256m
+    cpus: 0.50
+    security_opt: [no-new-privileges:true]
+    volumes:
+      # Read-only: this service saves through the api (OPENGYM_API_URL), never into the files.
+      - /srv/data/opengym:/data:ro
+      # Fresh OAuth store for the single-user connector; the old /srv/data/opengym-mcp is left
+      # untouched for rollback.
+      - /srv/data/opengym-mcp-remote:/oauth-data
+    logging:
+      options: { max-size: "10m", max-file: "3" }
+
+  web:
+    image: opengym-vps/web:${OPENGYM_IMAGE_TAG:?Set an immutable deployment tag}
+    container_name: opengym-web
+    init: true
+    mem_limit: 128m
+    cpus: 0.50
+    security_opt: [no-new-privileges:true]
+    logging:
+      options: { max-size: "10m", max-file: "3" }
