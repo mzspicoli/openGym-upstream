@@ -1,0 +1,150 @@
+# Builds the VPS images (api, mcp, web) from this branch and deploys them to the self-hosted
+# server over Tailscale, after a manual approval. Setup, secrets and the one-time server steps:
+# deploy/vps/README.md. Only the fork that runs this server needs it; it is not part of the
+# upstream project.
+#
+# Trigger: Actions tab -> "VPS deploy" -> Run workflow (branch vps/main), or push a vps-v* tag.
+# The deploy job waits for a reviewer of the `production` environment.
+name: VPS deploy
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['vps-v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vps-deploy
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: 22
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: deploy.sh tests
+        run: bash deploy/vps/test-deploy.sh
+      - name: api
+        working-directory: api
+        run: npm ci --omit=optional --no-audit --no-fund && npm test
+      - name: mcp
+        working-directory: mcp
+        run: npm ci --no-audit --no-fund && npm test
+      - name: frontend
+        working-directory: frontend
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          # csp.test expects every nginx header block to send a CSP; /mcp-authorize deliberately
+          # sends none (the mcp service sets its own), so that one file is left out here.
+          npx vitest run --exclude 'src/lib/csp.test.js'
+
+  build:
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: meta
+        run: |
+          ver=$(node -p "require('./frontend/package.json').version")
+          echo "tag=v${ver}-$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: api
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ./api
+          platforms: linux/amd64
+          load: true
+          tags: opengym-vps/api:${{ steps.meta.outputs.tag }}
+          build-args: |
+            VERSION=${{ steps.meta.outputs.tag }}
+            VCS_REF=${{ github.sha }}
+          cache-from: type=gha,scope=vps-api
+          cache-to: type=gha,scope=vps-api,mode=max
+      - name: mcp
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: mcp/Dockerfile.http
+          platforms: linux/amd64
+          load: true
+          tags: opengym-vps/mcp:${{ steps.meta.outputs.tag }}
+          cache-from: type=gha,scope=vps-mcp
+          cache-to: type=gha,scope=vps-mcp,mode=max
+      - name: web
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: web/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: opengym-vps/web:${{ steps.meta.outputs.tag }}
+          build-args: |
+            APP_BUILD=${{ steps.meta.outputs.tag }}
+          cache-from: type=gha,scope=vps-web
+          cache-to: type=gha,scope=vps-web,mode=max
+      - name: Package
+        run: |
+          tag='${{ steps.meta.outputs.tag }}'
+          mkdir bundle
+          docker save "opengym-vps/api:$tag" "opengym-vps/mcp:$tag" "opengym-vps/web:$tag" | gzip -1 > bundle/images.tar.gz
+          cp docker-compose.yml docker-compose.vps.yml bundle/
+          ls -la bundle
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: vps-bundle
+          path: bundle/
+          retention-days: 3
+          compression-level: 0
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # Required reviewers on this environment are the manual approval gate.
+    environment: production
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: vps-bundle
+          path: bundle
+      - name: Join the tailnet
+        uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+      - name: SSH setup
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.VPS_DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+      - name: Deploy
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # The server only runs its own installed deploy.sh for this key; the package is data.
+          tar -cf - -C bundle docker-compose.yml docker-compose.vps.yml images.tar.gz \
+            | ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+                -o ServerAliveInterval=30 "$VPS_USER@$VPS_HOST" "deploy $TAG"
+      - name: Remove the key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
