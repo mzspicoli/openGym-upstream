@@ -145,13 +145,25 @@ cat << EOF
   algo falhar. O app fica alguns segundos fora do ar durante a troca de cada servico.
 EOF
 if ! yesno "Disparar o pipeline agora?"; then
-  say "Tudo configurado. Para disparar depois: gh workflow run $WORKFLOW -R $REPO --ref $REF"
+  say "Tudo configurado. Para disparar depois, rode este script de novo (ele cria uma tag vps-v* nova) ou crie a tag pela API: veja o README."
   exit 0
 fi
-gh workflow run "$WORKFLOW" -R "$REPO" --ref "$REF" || stop "nao consegui disparar o workflow"
-sleep 8
-RUN_ID=$(gh run list -R "$REPO" -w "$WORKFLOW" -L 1 --json databaseId --jq '.[0].databaseId')
-[ -n "$RUN_ID" ] || stop "nao achei a execucao que acabei de disparar"
+# A manual dispatch only finds a workflow that lives on the fork's default branch, and ours is on
+# $REF. The workflow also runs on a vps-v* tag, which works from any branch: create one at $REF.
+SHA=$(gh api "repos/$REPO/branches/$REF" --jq .commit.sha) || stop "nao achei a branch $REF no fork"
+VER=$(gh api "repos/$REPO/contents/frontend/package.json?ref=$SHA" --jq .content | base64 -d | python3 -c 'import sys,json; print(json.load(sys.stdin)["version"])') || stop "nao consegui ler a versao do app"
+n=1
+while gh api "repos/$REPO/git/ref/tags/vps-v$VER-$n" > /dev/null 2>&1; do n=$((n + 1)); done
+TAG=vps-v$VER-$n
+gh api -X POST "repos/$REPO/git/refs" -f ref="refs/tags/$TAG" -f sha="$SHA" > /dev/null || stop "nao consegui criar a tag $TAG"
+ok "tag $TAG criada em ${SHA:0:9}; isso dispara o pipeline"
+RUN_ID=""
+n=0
+while [ $n -lt 12 ] && [ -z "$RUN_ID" ]; do
+  sleep 5; n=$((n + 1))
+  RUN_ID=$(gh api "repos/$REPO/actions/runs?event=push&per_page=10" --jq ".workflow_runs[] | select(.head_branch==\"$TAG\" and .name==\"VPS deploy\") | .id" | head -1)
+done
+[ -n "$RUN_ID" ] || stop "nao achei a execucao que a tag disparou; veja https://github.com/$REPO/actions"
 ok "execucao $RUN_ID: https://github.com/$REPO/actions/runs/$RUN_ID"
 echo "  Esperando testes e build (uns 10 a 20 minutos)..."
 n=0
