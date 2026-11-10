@@ -16,6 +16,11 @@ GitHub Actions ──(Tailscale)──> VPS
 
 ## One-time setup
 
+Short way: `bash deploy/vps/setup-pipeline.sh` (add `--check` to only look). It checks the restricted key,
+pins the host key, enables Actions, creates the `production` environment, stores the six secrets and can
+run and approve the first deploy; it walks you through the two Tailscale pages. The manual steps below
+are what it does.
+
 **1. SSH key for CI.** Make a key just for this and keep the private half out of the repo:
 
 ```
