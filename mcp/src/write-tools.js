@@ -127,8 +127,10 @@ export const logWorkout = {
     dry_run: z.boolean().optional().describe('Build and return the preview without saving anything.'),
     allow_duplicate: z.boolean().optional().describe('Log it even though the same sets are already logged that day (a genuine second session). Give it a different start or name too.'),
   },
-  handler: async (params, { env = process.env, fetchImpl } = {}) => {
-    const cfg = apiConfig(env)
+  // `cfg` ({ base, token }) is how the remote server hands over the api and a session for the
+  // user who approved the connection (state.js apiTarget); stdio reads them from the environment.
+  handler: async (params, { env = process.env, fetchImpl, cfg: given } = {}) => {
+    const cfg = given || apiConfig(env)
     const opts = fetchImpl ? { fetchImpl } : {}
     // One clock for every attempt: a retry after a conflict files the same workout, not a later one.
     const now = Date.now()
@@ -138,11 +140,13 @@ export const logWorkout = {
     }
     const input = inputOf({ ...params, date: params.date || localIso(new Date(now)) })
 
-    const me = await apiFetch(cfg, '/api/me', opts)
-    const uid = me.body?.user?.id
+    // A session handed over by the remote server was signed for the connection's own user, so
+    // there is no other profile to guard against; a token from the environment is asked whose it is.
+    const me = given ? null : await apiFetch(cfg, '/api/me', opts)
+    const uid = given ? 'connection' : me.body?.user?.id
     // A guard that cannot read whose token this is refuses rather than steps aside.
     if (typeof uid !== 'string' || !uid) throw fail('EAPI', 'the openGym server did not say which profile OPENGYM_TOKEN belongs to (GET /api/me); nothing was saved')
-    const local = localUid()
+    const local = given ? null : localUid()
     if (local && local !== uid) {
       // The ids go to the operator on stderr, not into the model's context (state.js ambiguousUid).
       console.error(`[opengym-mcp] OPENGYM_TOKEN is for profile ${uid}, this server reads ${local}`)

@@ -1,9 +1,14 @@
-/* opengym-mcp state — reads ./data/state-<uid>.json + db.json (read-only). Cached with an
-   fs.watch + mtime fallback so a session the api server just wrote is visible on the next
-   tool call without a restart. */
+/* opengym-mcp state — reads ./data/state-<uid>.json + db.json. Cached with an fs.watch + mtime
+   fallback so a session the api server just wrote is visible on the next tool call without a
+   restart. It never writes the file: a write (mutateState, for the remote server's profile tools) goes
+   through the api's PUT /api/data. */
 import fs from 'node:fs'
 import path from 'node:path'
 import { applyExerciseMerges } from '../../frontend/src/lib/exercise-merge.js'
+import { AsyncLocalStorage } from 'node:async_hooks'
+import crypto from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
+import { apiFetch } from './api-client.js'
 
 const DATA_DIR = process.env.OPENGYM_DATA || path.join(process.cwd(), 'data')
 // Whether a data directory was asked for, as opposed to the ./data guess.
@@ -116,8 +121,20 @@ export function init() {
   } catch { /* fs.watch unsupported on this platform; tools will re-read on mtime change */ }
 }
 
+// The remote server (http.js) answers many users from one process, so each request runs inside
+// withProfile() with the uid its OAuth grant belongs to, and reads that user's file directly —
+// the cache below is for the one profile a stdio process serves.
+const requestUid = new AsyncLocalStorage()
+
+export function withProfile(uid, fn) { return requestUid.run(uid, fn) }
+
 // Returns the state object, or null for a fresh account that never signed in on a device.
 export function getState() {
+  const uid = requestUid.getStore()
+  if (uid) {
+    const state = readJsonOrNull(stateFile(uid))
+    return state ? Object.assign({}, defaultsShape(), state) : null
+  }
   init()
   const file = stateFile(_uid)
   // Re-read if the file's mtime changed since our last load — covers watcher omissions and
@@ -148,8 +165,9 @@ export function getState() {
 
 // Returns the user record (id + name). No passkey material, no VAPID keys, no push subs.
 export function getUser() {
-  init()
-  const u = _db.users.find(x => x.id === _uid) || { id: _uid, name: 'Profile', created: null }
+  const uid = requestUid.getStore()
+  if (uid) reloadDb(); else init()
+  const u = _db.users.find(x => x.id === (uid || _uid)) || { id: uid || _uid, name: 'Profile', created: null }
   return { id: u.id, name: u.name, created: u.created || null }
 }
 
@@ -174,6 +192,71 @@ export function localUid() {
 export function invalidate() {
   _state = undefined
   _loadedMtime = 0
+}
+
+// `_rev` is the revision the api keeps for PUT /api/data (`baseRev`). Write tools pass back the
+// one they read, and the write is refused if the browser — or another tool call — has written
+// since.
+export const getStateVersion = () => Number(getState()?._rev) || 0
+
+const fail = (code, message) => Object.assign(new Error(message), { code })
+const SESSION_TTL_MS = 60 * 1000
+
+// How the remote server reaches the api and who it speaks as. The api is the one writer of a
+// profile's document (its compare-and-write and its sync stamps are what keep a change from being
+// undone by the next device that merges), so a write goes there, with a session the api accepts
+// for exactly the user who approved the connection. That session is signed here with the data
+// directory's `secret` — the key this server already reads to check the consent page's cookie —
+// and lives a minute: nothing stored, nothing to revoke, and "sign out everywhere" (the user's
+// `sv`) ends it like any other. It only ever travels to OPENGYM_API_URL, the api on the compose
+// network, never to a public address.
+export function apiTarget(uid) {
+  const raw = (process.env.OPENGYM_API_URL || '').trim()
+  let url
+  try { url = new URL(raw) } catch { url = null }
+  if (!url || (url.protocol !== 'http:' && url.protocol !== 'https:')) {
+    throw fail('ENOCONFIG', 'OPENGYM_API_URL is not set to the api\'s address on the compose network (http://api:3000): the write tools save through it')
+  }
+  let secret
+  try { secret = fs.readFileSync(path.join(DATA_DIR, 'secret'), 'utf8').trim() } catch { secret = '' }
+  const user = ((readJsonOrNull(path.join(DATA_DIR, 'db.json')) || {}).users || []).find(candidate => candidate.id === uid)
+  if (!secret || !user || user.disabled) throw fail('EAUTH', 'this profile cannot be written to: it is gone or disabled')
+  const payload = `${uid}:${Date.now() + SESSION_TTL_MS}:${user.sv || 0}:b`
+  const mac = crypto.createHmac('sha256', secret).update(payload).digest('base64url')
+  return { base: url.origin + url.pathname.replace(/\/+$/, ''), token: `${payload}.${mac}` }
+}
+
+const conflict = (expected, current) =>
+  fail('CONFLICT', `state changed: expected version ${expected}, current is ${current}; read it again before writing`)
+
+// Applies `producer` to the profile as the api holds it and saves the result through
+// PUT /api/data with the revision read. `expectedVersion` is the one the caller was shown; a
+// profile that moved since is a CONFLICT, never a silent overwrite.
+export async function mutateState(expectedVersion, producer, { fetchImpl } = {}) {
+  const uid = requestUid.getStore() || (init(), _uid)
+  const cfg = apiTarget(uid)
+  const opts = fetchImpl ? { fetchImpl } : {}
+  const got = await apiFetch(cfg, '/api/data', opts)
+  const doc = got.body?.state
+  if (!doc || typeof doc !== 'object') throw fail('ENOSTATE', 'this profile has no synced data on the server yet: open openGym and sign in on a device once, then try again')
+  const rev = Number(got.body.rev) || 0
+  if (rev !== expectedVersion) throw conflict(expectedVersion, rev)
+  // The producer works on the document with the app's defaults filled in, so it can push to a
+  // list the profile never had. What it leaves exactly as the default is dropped again: the api
+  // stamps every difference as an edit made now, and a default must not land on every device as one.
+  const defaults = defaultsShape()
+  const next = Object.assign({}, structuredClone(defaults), structuredClone(doc))
+  producer(next)
+  for (const key of Object.keys(defaults)) if (!(key in doc) && isDeepStrictEqual(next[key], defaults[key])) delete next[key]
+  const put = await apiFetch(cfg, '/api/data', { ...opts, method: 'PUT', body: { state: next, baseRev: rev, ...(typeof doc._wid === 'string' ? { baseWid: doc._wid } : {}) } })
+  if (put.status === 409) throw conflict(expectedVersion, Number(put.body?.rev) || rev + 1)
+  invalidate()
+  // The api answers with the revision it counted this write as, but it can store one further when
+  // it put back something the document left out (api/sync-stamps.js), so the number to hand on to
+  // the next write is the one it holds now.
+  let held = Number(put.body?.rev) || rev + 1
+  try { held = Number((await apiFetch(cfg, '/api/data/rev', opts)).body?.rev) || held } catch { /* the write is saved; the next read will say */ }
+  return { state_version: held }
 }
 
 // Test-only: work against a passed-in state, not the disk.

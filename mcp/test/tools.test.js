@@ -291,6 +291,16 @@ describe('get_week_plan', () => {
     expect(r.today_routine_name).toBe('Leg Day')
   })
 
+  test('a weekday holding several routines lists all of them, first one as routine_id', () => {
+    const [push, pull] = ['Push Day', 'Pull Day'].map(name => S.routines.find(r => r.name === name))
+    S.week[2] = [push.id, pull.id]
+    const tuesday = call('get_week_plan').weekdays.find(d => d.weekday === 2)
+    expect(tuesday.routine_id).toBe(push.id)
+    expect(tuesday.routine_name).toBe('Push Day')
+    expect(tuesday.routine_ids).toEqual([push.id, pull.id])
+    expect(tuesday.routine_names).toEqual(['Push Day', 'Pull Day'])
+  })
+
   test('empty week + no override → today has no routine (a quiet Sunday)', () => {
     S.week = {}
     S.dayPlan = {}

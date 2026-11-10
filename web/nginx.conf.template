@@ -111,6 +111,26 @@ server {
         proxy_set_header CF-Connecting-IP "${CF_CONNECTING_IP}";
     }
 
+    # Consent page of the optional remote MCP connector (docs/MCP_REMOTE.md). It lives on the
+    # app's own origin so the passkey session cookie reaches it; the MCP protocol endpoints have
+    # their own hostname. Resolved per request like /api above, so web still starts when the
+    # `mcp` profile is not running — the page then simply answers 502.
+    location = ${BASE_PATH}/mcp-authorize {
+        resolver ${RESOLVER} valid=10s ipv6=off;
+        set $mcp_backend mcp:3001;
+        # A variable proxy_pass does not append the query string by itself, and every OAuth
+        # parameter (client_id, redirect_uri, code_challenge …) travels in it.
+        proxy_pass http://$mcp_backend/authorize$is_args$args;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # No Content-Security-Policy here: an add_header in a location replaces the inherited set, so
+        # the server-wide policy (form-action self) no longer blocks the 303 to the AI client. mcp sets its own CSP.
+        add_header X-Frame-Options "DENY" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Referrer-Policy "no-referrer" always;
+    }
+
     # The app routes behind the hash (/#/plan, /#/history …), so a path is never a screen, and the
     # shell's asset URLs are relative (vite base './' — the Pages demo lives under /demo/). Serving
     # index.html AT a deep path (/plan/r/x: a typo, a stale link) gave a page whose scripts resolved

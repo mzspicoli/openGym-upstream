@@ -94,6 +94,7 @@ const Muscles = lazyView(() => import('./views/Muscles.jsx'))
 const SettingsRoute = lazyView(() => import('./views/Settings.jsx').then(m => ({ default: m.SettingsRoute })))
 // The app tour's overlay (components/Tour.jsx): fetched when it opens, never before.
 const Tour = lazy(() => import('./components/Tour.jsx'))
+const McpSettings = lazyView(() => import('./views/McpSettings.jsx'))
 let viewsPrefetched = false
 const prefetchViews = () => {
   if (viewsPrefetched) return
@@ -349,6 +350,7 @@ function Shell() {
       {isOn(S, 'body') && <Route path="/progress-photos" element={<ProgressPhotos />} />}
       {isOn(S, 'body') && <Route path="/measurements" element={<Measurements />} />}
       <Route path="/settings" element={<SettingsRoute />} />
+      <Route path="/settings/mcp" element={<McpSettings />} />
       <Route path="/settings/:page" element={<SettingsRoute />} />
       {/* The Coach screens gate themselves on the instance config; the routes exist whenever the
           AI Coach module is on, so a deep link from a notification lands somewhere sane rather

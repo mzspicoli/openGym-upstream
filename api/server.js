@@ -43,6 +43,7 @@ import { createIntegrations } from './integrations/index.js';
 import { integrationRoutes } from './integrations/routes.js';
 import { excusedOn, nudgeFor, nudgeWindowOpen, toneOf } from './nudge.js';
 import { wrappedPushYear, wrappedSummary, wrappedPushOwed, wrappedPush } from './wrapped.js';
+import { proxyMcp } from './mcp-proxy.js';
 
 const PORT = +(process.env.PORT || 3000);
 const DATA = process.env.DATA_DIR || '/data';
@@ -3070,7 +3071,9 @@ const server = http.createServer(async (req, res) => {
   // above stays a plain lookup, and so csrfOk and the catch-all see one name for every file.
   const mm = /^\/api\/media\/([0-9a-f]{64})$/.exec(url.pathname);
   if (mm) { key = req.method + ' /api/media/{hash}'; req.mediaHash = mm[1]; }
-  const handler = routes[key];
+  // /api/mcp/* is the Settings page talking to the optional MCP container (api/mcp-proxy.js),
+  // which answers 503 itself when the connector is not enabled.
+  const handler = url.pathname.startsWith('/api/mcp/') ? proxyMcp : routes[key];
   if (!handler) return json(res, 404, { error: 'not found' });
   if (!csrfOk(req, key)) {
     // A Bearer that does not verify and no cookie beside it: nothing ambient is in play, the caller

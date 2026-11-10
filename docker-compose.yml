@@ -20,6 +20,9 @@ services:
       # cannot drift — change it in .env and both follow.
       - PORT=${PORT:-3000}
       - DATA_DIR=/data
+      # Set only with the optional `mcp` profile below (MCP_INTERNAL_URL=http://mcp:3001): the
+      # Settings screen reaches the MCP container through the API.
+      - MCP_INTERNAL_URL=${MCP_INTERNAL_URL:-}
       # The API is reachable only through the web container here, and that container overwrites
       # X-Forwarded-For / X-Real-IP with the real peer — so the sign-in throttle may count
       # requests by those headers instead of lumping everyone in as "the web container".
@@ -65,3 +68,31 @@ services:
       # The largest photo or video upload nginx passes to the API. Keep it above
       # MEDIA_VIDEO_MAX_MB (40 by default), which the api service reads from .env.
       - MEDIA_UPLOAD_MAX=${MEDIA_UPLOAD_MAX:-48m}
+
+  # Optional remote MCP connector (Streamable HTTP + OAuth 2.1/PKCE) for hosted AI clients —
+  # Claude, ChatGPT, Cursor — that cannot spawn the local stdio bridge. Off unless started with
+  # `docker compose --profile mcp up -d --build`. Each connection reaches only the profile of
+  # the openGym user who approved it. It needs its own public HTTPS hostname (MCP_ORIGIN); the
+  # consent page stays on the app's origin at /mcp-authorize. See docs/MCP_REMOTE.md.
+  # Reads go to the data directory (read-only mount); every write goes through the api
+  # (OPENGYM_API_URL) as the user who approved the connection, like any other device.
+  mcp:
+    profiles: [mcp]
+    build:
+      context: .
+      dockerfile: mcp/Dockerfile.http
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - PORT=3001
+      - OPENGYM_DATA=/data
+      - OPENGYM_API_URL=http://api:3000
+      - OAUTH_DATA=/oauth-data
+      - OAUTH_ISSUER=${MCP_ORIGIN:-http://localhost:8086}
+      - OAUTH_AUTHORIZE_URL=${ORIGIN:-http://localhost:8080}${BASE_PATH:-}/mcp-authorize
+      - MCP_RESOURCE=${MCP_ORIGIN:-http://localhost:8086}/mcp
+    ports:
+      - "${MCP_WEB_PORT:-127.0.0.1:8086}:3001"
+    volumes:
+      - ./data:/data:ro
+      - ./data/mcp-oauth:/oauth-data

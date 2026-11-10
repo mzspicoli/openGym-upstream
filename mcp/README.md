@@ -11,11 +11,17 @@ already writes, and the LLM never sees passkeys, VAPID keys, or session secrets.
 tool, `log_workout`, is off until you pair it with your server (see
 [Logging workouts](#logging-workouts)).
 
+An optional, opt-in Docker service adds the same tools over OAuth-authenticated Streamable HTTP
+for hosted clients (Claude, ChatGPT, Cursor …), plus write tools. Each remote connection only
+reaches the profile of the openGym user who approved it. See
+[`docs/MCP_REMOTE.md`](../docs/MCP_REMOTE.md).
+
 The numbers it answers with are computed by the **same pure functions the React UI uses**
 (`frontend/src/lib/*.js`) — `estimate1RM`, `loadOfWorkouts`, `effectiveRoutine`, etc. — so a
 "what's my bench 1RM?" answer matches the Stats screen exactly.
 
-> Phase 1 of a multi-phase plan, plus the first write tool. See **Roadmap** below.
+> The stdio bridge reads your data and has one write tool, `log_workout`. The opt-in remote mode
+> (OAuth, `--profile mcp`) adds the profile write tools. See **Roadmap** below.
 
 ## Quick start
 
@@ -178,7 +184,7 @@ top level) — split into `i18n-core.js` (pure, Node-safe) + `i18n.js` (Vite/Rea
 re-exports from core). `exercises.js` got a one-line `import.meta.env || {}` guard. No new
 dependencies landed in `frontend/`, no public exports changed.
 
-## Design constraints honoured
+## Design constraints honoured (stdio mode)
 
 - **One runtime dependency beyond the MCP SDK:** none. No database driver, no HTTP framework.
 - **No new container.** stdio transport is spawned by the LLM client; nothing to add to
@@ -189,6 +195,9 @@ dependencies landed in `frontend/`, no public exports changed.
   credential, no new api route.
 - **No telemetry.** The read tools make no network call. `log_workout` talks to your own
   openGym server and nothing else. The process exits when the LLM client disconnects.
+
+The opt-in remote mode is the deliberate exception: a separate container, Express (already a
+dependency of the MCP SDK's HTTP transport) and its own OAuth state in `./data/mcp-oauth`.
 
 ## Tests
 
@@ -219,9 +228,12 @@ a laptop and fails under `CI`). The workout it builds is tested in
   `state-<uid>.json` directly: the api is the one writer of that file, and its sync stamps are
   what keep a write from being undone by the next phone that merges.
   - **Done:** `log_workout`, on the paired-session token (`scripts/pair.mjs`).
-  - Next: `add_bodyweight`, `edit_routine`, `assign_weekday`, `override_day`, log corrections.
-- **Phase 3:** Streamable HTTP transport, opt-in 4th container in `docker-compose.yml`. Same
-  tool implementations, second transport — the MCP SDK supports both behind one tool registration.
+  - Next over stdio: `add_bodyweight`, `edit_routine`, `assign_weekday`, `override_day`, log corrections.
+- **Done (Phase 3):** Streamable HTTP transport, opt-in `mcp` container in `docker-compose.yml`
+  (`--profile mcp`). Same tool implementations, second transport. OAuth 2.1 + PKCE with consent
+  on the app's own passkey session instead of long-lived tokens; the write tools save through
+  the api's `PUT /api/data` as the user who approved the connection. See
+  [`docs/MCP_REMOTE.md`](../docs/MCP_REMOTE.md).
 
 ## License
 
