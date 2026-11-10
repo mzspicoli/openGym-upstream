@@ -1,0 +1,58 @@
+# Review automático do Claude (pela assinatura, via o segredo CLAUDE_CODE_OAUTH_TOKEN) em PRs que miram
+# `vps/main`, a branch deste fork que roda o servidor. Só PRs abertos pelo dono do fork, de branches do próprio
+# fork (o repositório é público: PR de estranho nunca aciona nem recebe segredo). Não roda a cada push, para
+# poupar o limite da assinatura. O Claude só lê e comenta; não edita arquivos nem mescla.
+#
+# Fica só em `vps/main`, como o vps-deploy.yml: não faz parte do projeto upstream e não deve ir junto nas
+# branches que viram PR para DuarteSantos8/openGym. Pedidos por comentário (`@claude`) não funcionam aqui,
+# porque o GitHub roda eventos de comentário a partir da branch padrão (`main`).
+name: Claude review
+
+on:
+  pull_request:
+    branches: [vps/main]
+    types: [opened, ready_for_review, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  claude:
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.user.login == github.repository_owner &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: Review automático da PR
+        uses: anthropics/claude-code-action@4fa93a88de49bbef68b10eb15aabedf28ca0e1ed # v1.0.271
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          track_progress: true
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Revise esta PR em português do Brasil. Foque no que importa: bugs e regressões, casos de borda,
+            segurança (segredos, autenticação/OAuth do MCP, injeção), perda de dados e testes que faltam.
+            Atenção especial ao estado em JSON dos perfis (concorrência com `_rev` e resposta 409, nunca perder
+            treino), ao deploy da VPS (`deploy/vps/`, tags `vps-v*`) e à compatibilidade com o upstream.
+            Não comente estilo nem preferência pessoal. Use comentários inline só para problemas concretos
+            (cite arquivo e linha) e termine com um resumo curto: o que está bom, o que bloqueia o merge e o
+            que é opcional. Se não houver problema, diga isso em uma linha. Não edite arquivos.
+          claude_args: |
+            --max-turns 12
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Read,Grep,Glob"
