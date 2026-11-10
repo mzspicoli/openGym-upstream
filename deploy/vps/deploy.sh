@@ -2,10 +2,10 @@
 # Deploy of the VPS release (api + mcp + web), run on the server.
 #
 # This file is the trust boundary of the pipeline. Install it by hand at
-# /srv/apps/deploy/deploy.sh (owned by the operator, NOT writable by the CI key) and let CI reach it
+# /srv/apps/deploy/opengym-deploy.sh (owned by the operator, NOT writable by the CI key) and let CI reach it
 # only through an SSH key restricted in authorized_keys:
 #
-#   command="/srv/apps/deploy/deploy.sh",restrict ssh-ed25519 AAAA... opengym-ci
+#   command="/srv/apps/deploy/opengym-deploy.sh",restrict ssh-ed25519 AAAA... opengym-ci
 #
 # so the CI job can run exactly this script and nothing else. The docker group is root-equivalent,
 # which is why the script is never shipped by CI itself.
