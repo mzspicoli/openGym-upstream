@@ -31,13 +31,13 @@ ssh-keygen -t ed25519 -N '' -C opengym-ci -f ./opengym-ci
 
 ```
 sudo install -d -o <operator> /srv/apps/deploy
-install -m 755 deploy/vps/deploy.sh /srv/apps/deploy/deploy.sh
+install -m 755 deploy/vps/deploy.sh /srv/apps/deploy/opengym-deploy.sh
 ```
 
 Add one line to `~<operator>/.ssh/authorized_keys` (the public half of the key above):
 
 ```
-command="/srv/apps/deploy/deploy.sh",restrict ssh-ed25519 AAAA... opengym-ci
+command="/srv/apps/deploy/opengym-deploy.sh",restrict ssh-ed25519 AAAA... opengym-ci
 ```
 
 `restrict` turns off forwarding, a terminal and agent use; `command=` makes every login run the
@@ -89,8 +89,8 @@ previous images back and leaves the link where it was.
 From anywhere that can SSH with the CI key, or on the server:
 
 ```
-/srv/apps/deploy/deploy.sh rollback     # previous images, recorded by the last deploy
-/srv/apps/deploy/deploy.sh status
+/srv/apps/deploy/opengym-deploy.sh rollback     # previous images, recorded by the last deploy
+/srv/apps/deploy/opengym-deploy.sh status
 ```
 
 A rollback does not touch data. To also restore the data, untar the backup of that deploy by hand,
