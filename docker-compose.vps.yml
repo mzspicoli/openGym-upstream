@@ -20,12 +20,6 @@ services:
     mem_limit: 256m
     cpus: 0.50
     security_opt: [no-new-privileges:true]
-    volumes:
-      # Read-only: this service saves through the api (OPENGYM_API_URL), never into the files.
-      - /srv/data/opengym:/data:ro
-      # Fresh OAuth store for the single-user connector; the old /srv/data/opengym-mcp is left
-      # untouched for rollback.
-      - /srv/data/opengym-mcp-remote:/oauth-data
     logging:
       options: { max-size: "10m", max-file: "3" }
 

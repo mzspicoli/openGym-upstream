@@ -43,9 +43,7 @@ jobs:
         working-directory: frontend
         run: |
           npm ci --ignore-scripts --no-audit --no-fund
-          # csp.test expects every nginx header block to send a CSP; /mcp-authorize deliberately
-          # sends none (the mcp service sets its own), so that one file is left out here.
-          npx vitest run --exclude 'src/lib/csp.test.js'
+          npx vitest run
 
   build:
     needs: test
@@ -76,7 +74,7 @@ jobs:
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
-          file: mcp/Dockerfile.http
+          file: mcp/Dockerfile
           platforms: linux/amd64
           load: true
           tags: opengym-vps/mcp:${{ steps.meta.outputs.tag }}
